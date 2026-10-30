@@ -387,8 +387,9 @@ destination"), it:
 1. **Audits first, read-only.** It checks that you can move items out of the
    origin and add items to the destination, and that the destination is
    private (not shared with the public or all registered users). It flags
-   anything in the origin with its own sharing settings (those would follow
-   the item instead of inheriting Staging's), name clashes in the
+   any file or folder in the origin, at any depth, with its own sharing
+   settings (those would follow the item instead of inheriting Staging's),
+   name clashes in the
    destination (including two rows moving same-named files into one folder),
    and unsupported item types.
 2. **Writes a "before" manifest**: one row per file with synID, name, MD5,
@@ -403,12 +404,18 @@ destination"), it:
 4. **Moves the origin's contents** (not the origin folder itself) into the
    destination. synIDs stay the same, and the moved items now inherit the
    destination's sharing settings.
-5. **Optionally leaves a redirect Link** in each origin folder that points
+5. **Removes leftover sharing settings** (if `reset_local_sharing` is
+   `True`, the default). Anything flagged in step 1 has its own sharing
+   settings removed, so it inherits the destination's like everything else.
+   Each removed setting is saved to the run folder first
+   (`removed_acl_<synID>.json`) in case it needs to be put back.
+6. **Optionally leaves a redirect Link** in each origin folder that points
    to the destination, so the contributor's team can see where the data
    went.
-6. **Verifies every file**: it's under the destination, its MD5 is
-   unchanged, and (if migrated) it's in the destination's storage location.
-   Then it writes an "after" manifest.
+7. **Verifies every file**: it's under the destination, its MD5 is
+   unchanged, (if migrated) it's in the destination's storage location, and
+   every moved file and folder gets its sharing settings from the
+   destination. Then it writes an "after" manifest.
 
 `synapseutils.copy()` is deliberately not used. Its copies point at the same
 stored bytes as the originals, so the data never actually reaches the
@@ -433,8 +440,8 @@ a side effect of it, not a requirement.
    ```
 
 4. In `move_data.py`, set `CONFIG["ticket_id"]` and `CONFIG["plan_csv"]`, and
-   decide on `migrate_storage` (default `True`) and `leave_redirect_link`
-   (default `False`).
+   decide on `migrate_storage` (default `True`), `reset_local_sharing`
+   (default `True`), and `leave_redirect_link` (default `False`).
 5. Run it with `dry_run = True` (the default) and read the report. Expect it
    to take several minutes for a few thousand files, because it looks up
    every file.

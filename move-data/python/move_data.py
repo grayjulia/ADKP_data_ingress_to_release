@@ -10,9 +10,10 @@ DESTINATION". For every row, this script:
 
   1. Audits before touching anything: both IDs exist, you have permission to
      move/add, the destination is private (no PUBLIC / all-registered-users
-     access), nothing in the origin has its own local sharing settings that
-     would follow it, no name collisions, and which storage location the files
-     live in vs. the destination folder's storage location.
+     access), which items in the origin (files and folders, at any depth)
+     have their own local sharing settings that would follow them, no name
+     collisions, and which storage location the files live in vs. the
+     destination folder's storage location.
   2. Writes a "before" manifest (one CSV row per file: synID, name, MD5, size,
      storage location) so there's a local record of exactly what was moved.
   3. (If the storage locations differ and migrate_storage is True) Migrates the
@@ -22,10 +23,15 @@ DESTINATION". For every row, this script:
   4. Moves the origin's children (not the origin folder itself) into the
      destination by changing each entity's parent. synIDs stay the same, and
      the moved items now inherit the destination's sharing settings.
-  5. Optionally leaves a Link in the origin folder pointing to the destination,
+  5. (If reset_local_sharing is True) Removes the local sharing settings found
+     in step 1, so those items inherit the destination's too. Each one is
+     saved to the run folder before it's removed.
+  6. Optionally leaves a Link in the origin folder pointing to the destination,
      so the contributor's team can see where the data went.
-  6. Verifies every file: correct parent, same MD5 as before, and (if migrated)
-     now in the destination's storage location. Writes an "after" manifest.
+  7. Verifies every file: correct parent, same MD5 as before, (if migrated)
+     now in the destination's storage location, and every moved file/folder
+     gets its sharing settings from the destination. Writes an "after"
+     manifest.
 
 Why both a move AND a migration? Changing an entity's parent only changes
 where it shows up in Synapse - it does NOT move the bytes. If a contributor
@@ -83,6 +89,11 @@ CONFIG = {
     # migrate the bytes into the destination's storage location before moving.
     # False: only change the parent folder (bytes stay where they are).
     "migrate_storage": True,
+
+    # True: after moving, remove any local sharing settings on the moved files/folders
+    # so everything inherits the destination's (each one is saved to the run folder first).
+    # False: leave them in place - they keep the origin's settings, and the audit only warns.
+    "reset_local_sharing": True,
 
     # True: after moving, leave a Link in each origin folder pointing at its destination.
     "leave_redirect_link": False,
@@ -318,20 +329,39 @@ def audit_row(syn, row, config, names_claimed):
                                  item["id"]))
         claimed[item["name"]] = origin_id
 
-    # Anything with its own sharing settings keeps them after the move instead of
-    # inheriting the destination's - flag so a person can decide.
+    # Anything with its own sharing settings (a file or folder at any depth) keeps
+    # them after the move instead of inheriting the destination's.
     print(f"  {label}: checking {len(items)} item(s) for local sharing settings and file storage...")
-    for item in items:
-        for entity_id in [item["id"], *subfolders_under(syn, item)]:
-            if get_benefactor(syn, entity_id) == entity_id:
-                issues.append(_issue(
-                    "WARNING", "origin_id",
-                    f"{label}: {entity_id} has its own local sharing settings, which will move with it and "
-                    "NOT inherit the destination's - review/remove them after the move", entity_id))
+    files_by_item = {item["id"]: files_under(syn, item) for item in items}
+    tree_ids = list(dict.fromkeys(
+        entity_id for item in items
+        for entity_id in [item["id"], *subfolders_under(syn, item),
+                          *(file_id for file_id, _name in files_by_item[item["id"]])]))
+    local_acl_ids = []
+    for entity_id in tree_ids:
+        if get_benefactor(syn, entity_id) != entity_id:
+            continue
+        local_acl_ids.append(entity_id)
+        if not config["reset_local_sharing"]:
+            issues.append(_issue(
+                "WARNING", "origin_id",
+                f"{label}: {entity_id} has its own local sharing settings, which will move with it and "
+                "NOT inherit the destination's - set reset_local_sharing=True or remove them after the move",
+                entity_id))
+        elif not get_permissions(syn, entity_id).get("canChangePermissions"):
+            issues.append(_issue(
+                "ERROR", "origin_id",
+                f"{label}: {entity_id} has its own local sharing settings and you can't change them - ask the "
+                "owner for admin access so they can be removed", entity_id))
+        else:
+            issues.append(_issue(
+                "WARNING", "origin_id",
+                f"{label}: {entity_id} has its own local sharing settings - they'll be saved to the run folder "
+                "and removed after the move so it inherits the destination's", entity_id))
 
     needs_migration = 0
     for item in items:
-        for file_id, _name in files_under(syn, item):
+        for file_id, _name in files_by_item[item["id"]]:
             info = file_info(file_id)
             info.update({"origin_id": origin_id, "destination_id": dest_id, "top_level_item_id": item["id"]})
             manifest.append(info)
@@ -350,6 +380,8 @@ def audit_row(syn, row, config, names_claimed):
                 "destination_id": dest_id, "destination_name": dest["name"],
                 "destination_path": row.get("destination_path", ""),
                 "destination_storage_location_id": dest_storage,
+                "destination_benefactor_id": get_benefactor(syn, dest_id),
+                "tree_ids": tree_ids, "local_acl_ids": local_acl_ids,
                 "items": items, "file_count": len(manifest), "needs_migration": needs_migration,
                 "total_bytes": sum(m["content_size"] or 0 for m in manifest)}
     return row_plan, issues, manifest
@@ -423,6 +455,22 @@ def move_items(syn, row_plan, run_dir, ticket_id):
     print(f"Moved {len(row_plan['items'])} item(s) from {row_plan['origin_id']} to {dest_id}.")
 
 
+def remove_local_sharing(syn, row_plan, run_dir, ticket_id):
+    """
+    Delete the local sharing settings (ACL) on each moved item that had one, so it
+    inherits the destination's. Runs after the move, so the item inherits straight
+    from the destination. Each ACL is saved to the run folder before it's deleted.
+    """
+    for entity_id in row_plan["local_acl_ids"]:
+        acl = syn.restGET(f"/entity/{entity_id}/acl")
+        with open(os.path.join(run_dir, f"removed_acl_{entity_id}.json"), "w") as f:
+            json.dump(acl, f, indent=2)
+        syn.restDELETE(f"/entity/{entity_id}/acl")
+        _log_action(run_dir, ticket_id, "remove_local_sharing", entity_id=entity_id,
+                    removed_principal_ids=[e["principalId"] for e in acl.get("resourceAccess", [])])
+    print(f"Removed local sharing settings from {len(row_plan['local_acl_ids'])} item(s).")
+
+
 def leave_redirect_link(row_plan, run_dir, ticket_id):
     name = f"MOVED - see {row_plan['destination_name']} ({row_plan['destination_id']})"
     link = Link(name=name, parent_id=row_plan["origin_id"], target_id=row_plan["destination_id"]).store()
@@ -431,7 +479,7 @@ def leave_redirect_link(row_plan, run_dir, ticket_id):
     print(f"Left redirect link {link.id} in {row_plan['origin_id']}.")
 
 
-def verify(syn, row_plans, manifest_before, migrated_origins):
+def verify(syn, row_plans, manifest_before, migrated_origins, reset_local_sharing):
     """Re-check every file after the run. Returns (manifest_after, issues)."""
     by_origin = {p["origin_id"]: p for p in row_plans}
     after, issues = [], []
@@ -451,6 +499,16 @@ def verify(syn, row_plans, manifest_before, migrated_origins):
                 info["storage_location_id"] != plan["destination_storage_location_id"]:
             issues.append(_issue("ERROR", "verify", f"{before['file_id']} is not in the destination storage location",
                                  info["storage_location_id"]))
+    # Every moved file/folder should get its sharing settings from the destination. With
+    # reset_local_sharing=False, the ones flagged in the audit are expected not to.
+    for plan in row_plans:
+        for entity_id in plan["tree_ids"]:
+            benefactor_id = get_benefactor(syn, entity_id)
+            if benefactor_id != plan["destination_benefactor_id"]:
+                issues.append(_issue(
+                    "ERROR" if reset_local_sharing else "WARNING", "verify",
+                    f"{entity_id} gets its sharing settings from {benefactor_id}, not the destination's "
+                    f"({plan['destination_benefactor_id']})", benefactor_id))
     return after, issues
 
 
@@ -507,11 +565,14 @@ def main(config):
                 return
             migrated_origins.add(plan["origin_id"])
         move_items(syn, plan, run_dir, config["ticket_id"])
+        if config["reset_local_sharing"] and plan["local_acl_ids"]:
+            remove_local_sharing(syn, plan, run_dir, config["ticket_id"])
         if config["leave_redirect_link"] and plan["origin_is_container"]:
             leave_redirect_link(plan, run_dir, config["ticket_id"])
 
     print("\n=== Verification ===")
-    manifest_after, verify_issues = verify(syn, row_plans, manifest_before, migrated_origins)
+    manifest_after, verify_issues = verify(syn, row_plans, manifest_before, migrated_origins,
+                                           config["reset_local_sharing"])
     write_manifest(os.path.join(run_dir, "manifest_after.csv"), manifest_after)
     print_report(verify_issues)
     print(f"\nDone. Run folder (manifests + audit log): {run_dir}")
