@@ -117,6 +117,53 @@ contributor's HTML byte-for-byte), and the fallback import paths (browser
 DevTools copy, Word/Google Docs round-trip) for when Jira API access isn't
 available.
 
+### Acknowledgement Statements
+
+Adds a new Acknowledgement Statement sub-page under the AD Knowledge
+Portal's Acknowledgment Statements wiki page (owner `syn12666371`, wiki id
+`602387`) and re-alphabetizes that page's sub-pages afterward, so the new
+page lands in the right spot. Before writing anything to Synapse, it checks
+that the submitted text actually contains ADKP's required attribution
+sentence ("The results published here are in whole or in part based on
+data obtained from the AD Knowledge Portal"), raising an error if it's
+missing rather than publishing an incomplete statement.
+
+Standalone by design: it covers the same create/update-wiki-page and
+re-alphabetize logic as Wiki Setup (above) and Alphabetize Wiki (below),
+inlined into a single file with no dependency on either - only
+`synapseclient` is required. That means it's usable on its own (e.g. by
+someone who only has this one file, not the rest of the repo), at the cost
+of the two pieces of logic being duplicated rather than shared; if either
+of those tools' underlying behavior changes, check whether this script
+needs the same fix.
+
+```
+acknowledgement-statements/
+  python/add_acknowledgement_statement.py
+  python/requirements.txt
+```
+
+#### Using the script
+
+Standalone, edit-and-run, same pattern as Portal Studies Table below:
+
+1. `pip install -r acknowledgement-statements/python/requirements.txt`
+2. Authenticate via `synapse config` (~/.synapseConfig) or the
+   `SYNAPSE_AUTH_TOKEN` env var - never hardcode credentials in the script.
+3. Edit `STUDY_ABBREVIATION` (short study name - the sub-page title becomes
+   `"Acknowledgement - <name>"`) and `CONTENT_PATH` (path to the
+   contributor's acknowledgement HTML/text file) near the top of
+   `add_acknowledgement_statement.py`.
+4. Run it (`python add_acknowledgement_statement.py`). It always validates
+   the content file first, raising `ValueError` if the required attribution
+   sentence is missing - this check runs even with `DRY_RUN = True`. It
+   only creates the sub-page and re-alphabetizes if `DRY_RUN` is `False`
+   and validation passes.
+
+To use it from other code instead, import
+`add_acknowledgement_statement(syn, study_abbreviation, content_path,
+dry_run=True)`.
+
 ### Portal Studies Table
 
 Reusable tooling for entering and updating rows in the ADKP Portal Studies
@@ -176,10 +223,14 @@ before committing.**
 #### Alphabetize Wiki
 
 A separate script from `adkp_studies_table.py`/`.R` above, but part of the
-same process: **run this whenever an acknowledgement statement is added to
-the Portal Studies Table**, to keep the Acknowledgment Statements wiki
-page's sub-pages alphabetized. Unlike the other tools in this repo, it's a
-one-off script hardcoded to that specific page (owner `syn12666371`, wiki id
+same process: keeps the Acknowledgment Statements wiki page's sub-pages
+alphabetized. The Acknowledgement Statements tool above already includes
+this same re-sort logic and runs it automatically whenever it adds a new
+statement (the two scripts are standalone, not linked - see that section's
+note on duplicated logic) - use this script directly only when you need a
+standalone re-sort without adding a new page (e.g. after manually editing a
+sub-page's title). Unlike the other tools in this repo, it's a one-off
+script hardcoded to that specific page (owner `syn12666371`, wiki id
 `602387`) rather than a generic reusable tool - there's only one such page,
 and neither id identifies any investigator or study-specific data.
 
