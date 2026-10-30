@@ -417,6 +417,26 @@ destination"), it:
    every moved file and folder gets its sharing settings from the
    destination. Then it writes an "after" manifest.
 
+#### Choosing a transfer method
+
+- **`"migrate"`** (default): what's described above. Fast, because the copy
+  happens on AWS's side, and synIDs stay the same. **You must be the creator
+  of the destination's storage location.** Synapse refuses otherwise, and the
+  dry run reports it as an `ERROR`.
+- **`"reupload"`**: when you can't migrate. Each file is downloaded and then
+  uploaded into the destination at the same relative path, with the same name,
+  annotations, and description. Anything uploaded into the destination lands
+  in its storage location automatically. Each copy's MD5 and storage location
+  are checked before moving on, and only one file is on disk at a time. Copies
+  get **new synIDs**. Only the current version of each file is copied, and
+  provenance isn't carried over. All the data passes through the machine
+  running the script, so for large transfers run it on an EC2 instance, not a
+  laptop. If a run stops, run it again: files already copied (same path and
+  MD5) are skipped. The originals are only removed when you set
+  `delete_originals = True` and every copy verifies. They go to the Synapse
+  trash, where they can be restored.
+- **`"move"`**: only changes the parent folder. The bytes stay where they are.
+
 `synapseutils.copy()` is deliberately not used. Its copies point at the same
 stored bytes as the originals, so the data never actually reaches the
 destination's storage location, and it leaves duplicates behind to clean up.
@@ -440,9 +460,9 @@ a side effect of it, not a requirement.
    ```
 
 4. In `move_data.py`, set `CONFIG["ticket_id"]` and `CONFIG["plan_csv"]`, and
-   decide on `migrate_storage` (default `True`), `reset_local_sharing`
-   (default `True`), `confirm_migration` (default `True`), and
-   `leave_redirect_link` (default `False`).
+   decide on `transfer_method` (default `"migrate"`, see below),
+   `reset_local_sharing` (default `True`), `confirm_migration` (default
+   `True`), and `leave_redirect_link` (default `False`).
 5. Run it with `dry_run = True` (the default) and read the report. Expect it
    to take several minutes for a few thousand files, because it looks up
    every file.
