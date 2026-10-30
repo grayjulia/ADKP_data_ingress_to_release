@@ -22,6 +22,7 @@ This repo covers ADKP processes only.
   - [Wiki Setup](#wiki-setup)
 - [Stage 3: Validate/verify metadata](#stage-3-validateverify-metadata)
 - [Stage 4: Release data](#stage-4-release-data)
+  - [Acknowledgement Statements](#acknowledgement-statements)
   - [Alphabetize Wiki](#alphabetize-wiki)
 - [Not tied to a stage](#not-tied-to-a-stage)
   - [Move Data](#move-data)
@@ -271,10 +272,60 @@ contributor permissions from Staging if they're no longer needed.
 Staging to released" step: list each Staging folder as an origin and its
 released Data folder as the destination.
 
+### Acknowledgement Statements
+
+Adds a new Acknowledgement Statement sub-page under the AD Knowledge
+Portal's Acknowledgment Statements wiki page (owner `syn12666371`, wiki id
+`602387`) and re-alphabetizes that page's sub-pages afterward, so the new
+page lands in the right spot. Before writing anything to Synapse, it checks
+that the submitted text actually contains ADKP's required attribution
+sentence ("The results published here are in whole or in part based on
+data obtained from the AD Knowledge Portal"), raising an error if it's
+missing rather than publishing an incomplete statement.
+
+Standalone by design: it covers the same create/update-wiki-page and
+re-alphabetize logic as Wiki Setup (Stage 2) and Alphabetize Wiki (below),
+inlined into a single file with no dependency on either - only
+`synapseclient` is required. That means it's usable on its own (e.g. by
+someone who only has this one file, not the rest of the repo), at the cost
+of the two pieces of logic being duplicated rather than shared; if either
+of those tools' underlying behavior changes, check whether this script
+needs the same fix.
+
+```
+acknowledgement-statements/
+  python/add_acknowledgement_statement.py
+  python/requirements.txt
+```
+
+#### Using the script
+
+Standalone, edit-and-run, same pattern as Portal Studies Table:
+
+1. `pip install -r acknowledgement-statements/python/requirements.txt`
+2. Authenticate (see [Before you run anything](#before-you-run-anything)).
+3. Edit `STUDY_ABBREVIATION` (short study name - the sub-page title becomes
+   `"Acknowledgement - <name>"`) and `CONTENT_PATH` (path to the
+   contributor's acknowledgement HTML/text file) near the top of
+   `add_acknowledgement_statement.py`.
+4. Run it (`python add_acknowledgement_statement.py`). It always validates
+   the content file first, raising `ValueError` if the required attribution
+   sentence is missing - this check runs even with `DRY_RUN = True`. It
+   only creates the sub-page and re-alphabetizes if `DRY_RUN` is `False`
+   and validation passes.
+
+To use it from other code instead, import
+`add_acknowledgement_statement(syn, study_abbreviation, content_path,
+dry_run=True)`.
+
 ### Alphabetize Wiki
 
-Keeps the Acknowledgment Statements wiki page's sub-pages alphabetized. Run
-it whenever an acknowledgement statement is added to that page.
+Keeps the Acknowledgment Statements wiki page's sub-pages alphabetized. The
+Acknowledgement Statements tool above already includes this same re-sort
+logic and runs it automatically whenever it adds a new statement (the two
+scripts are standalone, not linked - see that section's note on duplicated
+logic) - use this script directly only when you need a standalone re-sort
+without adding a new page (e.g. after manually editing a sub-page's title).
 Unlike the other tools in this repo, it's a one-off script hardcoded to that
 specific page (owner `syn12666371`, wiki id `602387`) rather than a generic
 reusable tool - there's only one such page, and neither id identifies any

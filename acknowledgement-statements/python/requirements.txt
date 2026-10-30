@@ -1,0 +1,1 @@
+synapseclient>=4.11.0  # needed transitively by the imported wiki-setup / alphabetize-wiki modules
