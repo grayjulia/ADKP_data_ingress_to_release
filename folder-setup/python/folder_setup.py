@@ -7,9 +7,8 @@ provenance.
 Business rules come from:
   - SOP "ADTR 1-1.0 Data Ingress" (Confluence AD space, page 3380641793)
   - SOP "ADTR 1-2.0 Data Release" (Confluence AD space, page 2865233921) -
-    explicitly notes AD Knowledge Portal uses a nested folder structure while
-    ELITE Portal uses a flattened one. Other programs (GENIE, HTAN, and
-    others) each have their own documented, different folder conventions.
+    notes AD Knowledge Portal uses a nested folder structure, and individual
+    ADKP studies still vary (assay subfolders, versioned ingest folders).
     THIS SCRIPT MAKES NO ASSUMPTION ABOUT FOLDER ARRANGEMENT - it audits
     whatever tree actually exists under ROOT_SYN_ID and only changes what
     FOLDER_PLAN explicitly declares. Don't add logic elsewhere in this file
@@ -128,15 +127,10 @@ _BROAD_PRINCIPAL_IDS = {PUBLIC_PRINCIPAL_ID, AUTHENTICATED_USERS_PRINCIPAL_ID}
 _EXPOSING_ACCESS_TYPES = {"READ", "DOWNLOAD"}
 
 SOP_NOTES = {
-    "staging_private": "Staging folders must always remain Private, but *how* access is granted "
-        "differs by portal - don't assume one mechanism applies everywhere. ELITE splits it by "
-        "data type: human data uploaders join a Synapse Team scoped to the Project (inherited "
-        "permissions), while non-human data uploaders get local folder-level sharing instead (so "
-        "they can't see the human data in the rest of the Project). ADKP does not use this split: "
-        "its backend Project uses folder-level local sharing for the Staging folder regardless of "
-        "whether the data is human or not - add the uploader's Synapse username directly to the "
-        "Staging folder with 'edit' (or 'edit and delete') access. Check which portal a ticket "
-        "belongs to before assuming the ACL mechanism. (ADTR 1-1.0 5.4.2)",
+    "staging_private": "Staging folders must always remain Private. ADKP's backend Project uses "
+        "folder-level local sharing for the Staging folder regardless of whether the data is human "
+        "or not - add the uploader's Synapse username directly to the Staging folder with 'edit' "
+        "(or 'edit and delete') access. (ADTR 1-1.0 5.4.2)",
     "no_release_before_governance": "Never release (make public / apply Access Requirements) "
         "before the linked PCO governance ticket(s) are closed. Staging folders don't need "
         "ARs because they must always remain Private. (ADTR 1-1.0 5.3)",
@@ -146,11 +140,9 @@ SOP_NOTES = {
         "environment, never 'sandbox'. Programmatic access must use short-lived STS credentials, "
         "never long-lived IAM keys, and MFA is required for any human AWS console/CLI access. "
         "(Sage AWS Provisioner)",
-    "folder_arrangement_varies": "Different portals/programs structure their Synapse folders "
-        "differently (e.g. ADKP's nested Staging/Data vs. ELITE's flattened structure vs. GENIE's "
-        "Test/Staging/Production projects vs. versioned vN_ingest folders elsewhere). Don't assume "
-        "this ticket's arrangement matches another one - always audit the actual current tree "
-        "first. (ADTR 1-2.0 5, and portal-specific folder-structure docs)",
+    "folder_arrangement_varies": "ADKP studies don't all share one folder layout (nested "
+        "Staging/Data, assay subfolders, versioned vN_ingest folders). Don't assume this ticket's "
+        "arrangement matches another one - always audit the actual current tree first. (ADTR 1-2.0 5)",
 }
 
 AUDIT_LOG_PATH = os.path.join(os.path.dirname(__file__), "ingress_audit_log.jsonl")
@@ -308,7 +300,7 @@ def check_storage_location(syn, folder_id):
     explicit sign-off to use (see CONFIG["external_storage_confirmed"] and
     the module docstring's "On security" section).
     """
-    dest = syn.restGET(f"/entity/{folder_id}/uploadDestination")
+    dest = syn.restGET(f"/entity/{folder_id}/uploadDestination", endpoint=syn.fileHandleEndpoint)
     concrete_type = dest.get("concreteType", "")
     sts_enabled = bool(dest.get("stsEnabled", False))
     is_default_synapse_storage = concrete_type.endswith("S3UploadDestination") and not sts_enabled
