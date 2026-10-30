@@ -441,13 +441,16 @@ a side effect of it, not a requirement.
 
 4. In `move_data.py`, set `CONFIG["ticket_id"]` and `CONFIG["plan_csv"]`, and
    decide on `migrate_storage` (default `True`), `reset_local_sharing`
-   (default `True`), and `leave_redirect_link` (default `False`).
+   (default `True`), `confirm_migration` (default `True`), and
+   `leave_redirect_link` (default `False`).
 5. Run it with `dry_run = True` (the default) and read the report. Expect it
    to take several minutes for a few thousand files, because it looks up
    every file.
 6. When the report shows no `ERROR`s, set `dry_run = False` and run it again.
    The migration step shows how many files it will migrate and asks `y/n`
-   before copying anything.
+   before copying anything, once per plan row. The run waits at each
+   question until you answer. To let a multi-row run finish unattended, set
+   `confirm_migration = False` (only after a clean dry run).
 
 Large migrations (hundreds of GB) can take hours. Consider running one plan
 row at a time. If a run is interrupted, run it again: files that already
