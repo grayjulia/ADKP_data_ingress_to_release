@@ -1,0 +1,4 @@
+origin_id,destination_path,destination_id
+syn00000001,example_study/Staging/example_assay/raw,syn00000010
+syn00000002,example_study/Staging/example_assay/raw,syn00000010
+syn00000003,example_study/Staging/example_assay/processed,syn00000011

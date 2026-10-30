@@ -4,3 +4,10 @@ __pycache__/
 .RData
 .Rproj.user/
 .DS_Store
+
+# move-data: real move plans and run outputs (manifests, migration dbs, audit
+# logs) contain study-specific synIDs - keep them local. Only the example
+# plan is committed.
+move-data/plans/*
+!move-data/plans/example_move_plan.csv
+move-data/runs/
