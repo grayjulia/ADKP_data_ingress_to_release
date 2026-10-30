@@ -312,6 +312,13 @@ def subfolders_under(syn, item):
     return found
 
 
+def restriction_level(syn, entity_id):
+    """OPEN, RESTRICTED_BY_TERMS_OF_USE, or CONTROLLED_BY_ACT - including access requirements inherited from folders above."""
+    info = syn.restPOST("/restrictionInformation",
+                        json.dumps({"restrictableObjectType": "ENTITY", "objectId": entity_id}))
+    return info.get("restrictionLevel", "OPEN")
+
+
 def file_info(file_id):
     """MD5/size/storage location/parent of a file's current version, without downloading it."""
     f = File(id=file_id, download_file=False).get()
@@ -476,6 +483,18 @@ def audit_row(syn, row, config, names_claimed):
             manifest.append(info)
             if info["storage_location_id"] != dest_storage:
                 needs_migration += 1
+
+    # Access requirements (conditions for use, controlled access) attach to entities. A re-uploaded
+    # copy is a new entity, so it would silently lose them; Synapse refuses to move a restricted
+    # entity somewhere with fewer restrictions.
+    restricted = [m["file_id"] for m in manifest if restriction_level(syn, m["file_id"]) != "OPEN"]
+    if restricted:
+        issues.append(_issue(
+            "ERROR" if reupload else "WARNING", "origin_id",
+            f"{label}: {len(restricted)} file(s) have access requirements - "
+            + ("re-uploaded copies would NOT keep them. Work with Governance before copying."
+               if reupload else "the move fails unless the destination has the same ones. Check with Governance."),
+            restricted[:10]))
 
     if reupload:
         issues += match_existing_copies(syn, dest_id, manifest, claimed, label)

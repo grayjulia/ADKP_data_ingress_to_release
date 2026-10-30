@@ -434,7 +434,9 @@ destination"), it:
   laptop. If a run stops, run it again: files already copied (same path and
   MD5) are skipped. The originals are only removed when you set
   `delete_originals = True` and every copy verifies. They go to the Synapse
-  trash, where they can be restored.
+  trash, where they can be restored. Copies don't keep access requirements
+  (conditions for use, controlled access), so the dry run reports an `ERROR`
+  if any file has them.
 - **`"move"`**: only changes the parent folder. The bytes stay where they are.
 
 `synapseutils.copy()` is deliberately not used. Its copies point at the same
