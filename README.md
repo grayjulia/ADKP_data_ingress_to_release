@@ -20,6 +20,7 @@ This repo covers ADKP processes only.
   - [Portal Studies Table](#portal-studies-table)
 - [Stage 2: Collect/verify study documentation](#stage-2-collectverify-study-documentation)
   - [Wiki Setup](#wiki-setup)
+  - [Copy Wiki](#copy-wiki)
 - [Stage 3: Validate/verify metadata](#stage-3-validateverify-metadata)
 - [Stage 4: Release data](#stage-4-release-data)
   - [Acknowledgement Statements](#acknowledgement-statements)
@@ -241,6 +242,65 @@ docstring for full details, including why content is always passed as a
 contributor's HTML byte-for-byte), and the fallback import paths (browser
 DevTools copy, Word/Google Docs round-trip) for when Jira API access isn't
 available.
+
+### Copy Wiki
+
+Copies the text of one or more existing Synapse wikis into another entity's
+wiki. The usual case: a contributor already wrote up their methods on their
+own project folders, and that text needs to go on the matching Staging
+folder's wiki. The source wikis are never changed.
+
+```
+copy-wiki/
+  python/copy_wiki.py
+  python/requirements.txt
+  plans/example_copy_plan.csv   # format example (only committed file in plans/)
+  plans/<your plan>.csv         # git-ignored - real synIDs stay local
+  runs/                         # git-ignored - before/after wiki text, audit log
+```
+
+#### What it does
+
+Each row of a copy plan says "copy this source's wiki into this
+destination's wiki". Rows with the same destination are combined in CSV
+order, so a second source is added after the first instead of overwriting
+it. An optional `section_label` per row adds a heading above that source's
+text, which keeps two write-ups with the same section headings apart.
+
+1. **Audits first, read-only.** It checks that each source has a wiki with
+   text in it and that you can edit the destination. It stops if any wiki
+   involved has attachments (images or files): this tool doesn't copy them,
+   and storing over a page with attachments would drop them. It warns if a
+   source has sub-pages, since only the top page is copied.
+2. **Writes before/after files** to the run folder:
+   `before_<destination>.md` (the page's current text) and
+   `after_<destination>.md` (exactly what will be stored). Read the "after"
+   files before the real run.
+3. **Stores the new text** on the destination's top wiki page (creating it
+   if there's no wiki yet).
+4. **Verifies** the stored text matches the "after" file exactly.
+
+`destination_mode` decides what happens to text already on the destination:
+`"replace"` (e.g. a "To be provided" placeholder) or `"append"` (keep it and
+add the copied text after it). Re-running is safe: in `"replace"` mode a
+destination that already matches is skipped, and in `"append"` mode the run
+stops if the copied text is already on the page.
+
+To undo, use the page's Wiki History in Synapse, or the
+`before_<destination>.md` file.
+
+#### Using the script
+
+1. Write a copy plan CSV in `copy-wiki/plans/` with the columns `source_id`,
+   `destination_id`, and optionally `section_label` and `destination_path`
+   (a human-readable note).
+2. In `CONFIG` at the top of `copy_wiki.py`, set `ticket_id`, `plan_csv`,
+   `destination_mode`, `label_heading_level` (2 means `## label`), and
+   optionally `page_heading` (e.g. `"Methods"`, placed once above all the
+   copied text, one heading level larger than the labels).
+3. Run it with `dry_run` set to `True` (the default), and read the audit
+   report and the `after_*.md` files.
+4. Set `dry_run` to `False` and run it again.
 
 ---
 
