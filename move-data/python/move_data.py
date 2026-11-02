@@ -53,7 +53,8 @@ git-ignored, so real synIDs never get committed - see
 it, then run this file directly (`python move_data.py`). It always prints the
 audit report and writes the "before" manifest; it only changes anything in
 Synapse if CONFIG["dry_run"] is False and there are no ERROR-level issues.
-Migration also asks for a final y/n confirmation in the terminal.
+Migration also asks for a final y/n confirmation in the terminal before each
+row, unless CONFIG["confirm_migration"] is False.
 
 Run outputs (manifests, migration progress databases, audit log) go to
 ../runs/<ticket>_<timestamp>/, which is also git-ignored.
@@ -94,6 +95,11 @@ CONFIG = {
     # so everything inherits the destination's (each one is saved to the run folder first).
     # False: leave them in place - they keep the origin's settings, and the audit only warns.
     "reset_local_sharing": True,
+
+    # True: ask y/n in the terminal before migrating each row (the run waits until you answer).
+    # False: migrate without asking, so a multi-row run can finish unattended - only after a
+    # clean dry run.
+    "confirm_migration": True,
 
     # True: after moving, leave a Link in each origin folder pointing at its destination.
     "leave_redirect_link": False,
@@ -410,7 +416,7 @@ def print_report(issues):
 # Changes (only run when dry_run is False)
 # ==============================================================================
 
-def migrate_row(syn, row_plan, run_dir, ticket_id):
+def migrate_row(syn, row_plan, run_dir, ticket_id, confirm):
     """
     Migrate the origin's files into the destination's storage location, in place
     (same synIDs). Done before the move, so if it fails nothing has moved yet.
@@ -423,8 +429,8 @@ def migrate_row(syn, row_plan, run_dir, ticket_id):
     synapseutils.index_files_for_migration(
         syn, row_plan["origin_id"], dest_storage, db_path, file_version_strategy=FILE_VERSION_STRATEGY,
     )
-    # force=False: synapseutils prints the file count and asks for y/n before copying anything.
-    result = synapseutils.migrate_indexed_files(syn, db_path, create_table_snapshots=False, force=False)
+    # force=False (confirm=True): synapseutils prints the file count and asks y/n before copying anything.
+    result = synapseutils.migrate_indexed_files(syn, db_path, create_table_snapshots=False, force=not confirm)
     if result is None:
         print("Migration not confirmed - stopping before the move.")
         return False
@@ -559,7 +565,7 @@ def main(config):
     migrated_origins = set()
     for plan in row_plans:
         if config["migrate_storage"] and plan["needs_migration"]:
-            if not migrate_row(syn, plan, run_dir, config["ticket_id"]):
+            if not migrate_row(syn, plan, run_dir, config["ticket_id"], config["confirm_migration"]):
                 print(f"\nStopping: migration for {plan['origin_id']} did not finish cleanly. Nothing from this "
                       f"row was moved. See {run_dir} for details; re-running resumes the migration.")
                 return
