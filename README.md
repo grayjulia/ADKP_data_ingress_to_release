@@ -295,7 +295,9 @@ To undo, use the page's Wiki History in Synapse, or the
    `destination_id`, and optionally `section_label` and `destination_path`
    (a human-readable note).
 2. In `CONFIG` at the top of `copy_wiki.py`, set `ticket_id`, `plan_csv`,
-   `destination_mode`, and `label_heading_level` (2 means `## label`).
+   `destination_mode`, `label_heading_level` (2 means `## label`), and
+   optionally `page_heading` (e.g. `"Methods"`, placed once above all the
+   copied text, one heading level larger than the labels).
 3. Run it with `dry_run` set to `True` (the default), and read the audit
    report and the `after_*.md` files.
 4. Set `dry_run` to `False` and run it again.

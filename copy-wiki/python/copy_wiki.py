@@ -80,6 +80,10 @@ CONFIG = {
     # Heading level for each row's section_label: 2 -> "## label". Pick one level above the
     # headings inside the copied text so the copied sections sit under the label.
     "label_heading_level": 2,
+
+    # Optional heading placed once above all the copied text (e.g. "Methods"), one level
+    # larger than the section labels. None: no page heading.
+    "page_heading": None,
 }
 
 # ==============================================================================
@@ -205,13 +209,13 @@ def can_edit(syn, entity_id):
 # Audit (read-only)
 # ==============================================================================
 
-def build_text(existing, sections, mode, level):
+def build_text(existing, sections, mode, level, page_heading=None):
     """
     The destination's new wiki text: each source's text, under its label if
-    it has one, joined in plan order - after the existing text in "append"
-    mode.
+    it has one, joined in plan order, under page_heading if given - after the
+    existing text in "append" mode.
     """
-    blocks = []
+    blocks = [f"{'#' * (level - 1)} {page_heading}"] if page_heading else []
     for label, text in sections:
         body = text.strip()
         blocks.append(f"{'#' * level} {label}\n\n{body}" if label else body)
@@ -268,7 +272,8 @@ def audit_destination(syn, dest_id, rows, config, run_dir):
         print(f"    from {src_id} '{src['name']}': {len(text)} characters"
               + (f", labeled '{row['section_label']}'" if row["section_label"] else ""))
 
-    new_text, copied = build_text(existing, sections, config["destination_mode"], config["label_heading_level"])
+    new_text, copied = build_text(existing, sections, config["destination_mode"], config["label_heading_level"],
+                                  config["page_heading"])
     up_to_date = existing == new_text
     if config["destination_mode"] == "append" and not up_to_date and copied.strip() in existing:
         issues.append(_issue("ERROR", "destination_id", "the copied text is already on the destination page - "
@@ -330,6 +335,9 @@ def main(config):
     if config["destination_mode"] not in _DESTINATION_MODES:
         plan_issues.append(_issue("ERROR", "destination_mode", f"must be one of {sorted(_DESTINATION_MODES)}",
                                   config["destination_mode"]))
+    if config["page_heading"] and config["label_heading_level"] < 2:
+        plan_issues.append(_issue("ERROR", "label_heading_level", "must be 2 or more when page_heading is set, "
+                                  "so the page heading can be one level larger", config["label_heading_level"]))
     groups = group_by_destination(rows)
     print(f"=== Copy plan: {len(rows)} row(s) into {len(groups)} destination(s) from {config['plan_csv']} ===")
     for r in rows:
