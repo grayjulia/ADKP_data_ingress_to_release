@@ -1,0 +1,4 @@
+source_id,destination_id,section_label,destination_path
+syn00000001,syn00000010,Batch 1,example_study/Staging/example_assay
+syn00000002,syn00000010,Batch 2,example_study/Staging/example_assay
+syn00000003,syn00000011,,example_study/Staging/other_assay

@@ -1,0 +1,1 @@
+synapseclient>=4.14.0  # needs the WikiPage/WikiHeader models (synapseclient.models) used by this script

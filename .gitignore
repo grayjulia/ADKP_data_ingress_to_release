@@ -11,3 +11,10 @@ __pycache__/
 move-data/plans/*
 !move-data/plans/example_move_plan.csv
 move-data/runs/
+
+# copy-wiki: real copy plans and run outputs (before/after wiki text, audit
+# logs) contain study-specific synIDs and text - keep them local. Only the
+# example plan is committed.
+copy-wiki/plans/*
+!copy-wiki/plans/example_copy_plan.csv
+copy-wiki/runs/
