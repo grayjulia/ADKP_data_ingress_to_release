@@ -17,9 +17,10 @@ HOW FORMATTING IS PRESERVED
     guarantees byte-for-byte preservation of the contributor's original HTML
     (their <a href>, <sup>, <sub>, etc. tags survive untouched).
 
-    Do not run the contributor's content through html.escape(), markdown
-    conversion, or string manipulation of any kind before saving it to the
-    content file - edit the file directly if changes are needed.
+    Do not run the contributor's content through html.escape() or ad-hoc
+    string manipulation before saving it to the content file - edit the file
+    directly if changes are needed. The one deliberate exception is
+    html_to_synapse_markdown(), used by build_study_wiki() (see STUDY WIKIS).
 
     Synapse's wiki renderer does apply its own server-side HTML sanitizer
     when the page is rendered (this is server behavior we can't inspect or
@@ -29,6 +30,33 @@ HOW FORMATTING IS PRESERVED
     first upload of a new content pattern. verify_wiki_markdown() below only
     confirms the client didn't corrupt anything in transit/storage - it
     can't confirm how the renderer will display it.
+
+STUDY WIKIS (study description + methods)
+    build_study_wiki() assembles a study's wiki page in a fixed layout:
+
+        # <study name>                 <- always first; asked for if not given
+        ## Study Description:
+        <description>
+        ## Methods:
+        <methods>
+
+    The study name is usually the studies table's Study_Name followed by the
+    abbreviation in parentheses, e.g. "The EXAMPLE_STUDY Study (EXAMPLE_STUDY)".
+    Type it with normal underscores: they're written as &lowbar; for you,
+    because the portal's study page otherwise reads them as italics.
+
+    Contributor text pasted as raw HTML (<p>, <h3>, ...) renders with very
+    large gaps between paragraphs on Synapse, and other study wikis are
+    written in Synapse markdown. So build_study_wiki() converts HTML input
+    with html_to_synapse_markdown(): paragraphs become blank-line-separated
+    text, <h1>-<h6> become # headings, and links, bold, italics, <sup>/<sub>
+    and bullet lists are kept (as markdown). Figures/images stay as raw HTML.
+    Plain-text or markdown input (.md/.txt) is used as-is.
+
+    Contributors often start their text with their own labels (e.g. a first
+    paragraph "Study Description (<700 char): ..." or "Methods: METHODS").
+    Remove those from the description/methods files before building, since
+    the headings are added for you.
 
 Setup:
     pip install -r requirements.txt
@@ -61,6 +89,15 @@ Use as a library:
 Or from the command line:
     python adkp_wiki_template.py syn00000000 "Acknowledgement - EXAMPLE" \\
         acknowledgement_example.html --parent-id 00000000 --dry-run
+
+    Study wiki (study name on top, Study Description + Methods as h2). The
+    built markdown is written to content_path, then uploaded. Leave out
+    --study-name to be asked for it. Use --wiki-id to update a page that has
+    no title (e.g. a folder's existing root page):
+    python adkp_wiki_template.py syn00000000 "" study_wiki_example.md \\
+        --description description.html --methods methods.html \\
+        --study-name "The EXAMPLE_STUDY Study (EXAMPLE_STUDY)" \\
+        --wiki-id 000000 --dry-run
 
 GETTING A CONTENT FILE FROM A CONTRIBUTOR'S JIRA TICKET
     Contributors often submit this text as a Jira ticket field rather than a
@@ -97,8 +134,11 @@ GETTING A CONTENT FILE FROM A CONTRIBUTOR'S JIRA TICKET
 
 import argparse
 import hashlib
+import html
 import os
+import re
 import tempfile
+from html.parser import HTMLParser
 
 import synapseclient
 from synapseclient.core.exceptions import SynapseHTTPError
@@ -153,6 +193,170 @@ def heading_html(text, level=2, bold=True):
     return f"<h{level}>{inner}</h{level}>"
 
 
+def _escape_underscores(text):
+    """
+    Write underscores as &lowbar; so they show as underscores everywhere.
+
+    Synapse's own wiki view displays a plain "_" fine, but the AD Knowledge
+    Portal's study page (which shows the same wiki) reads pairs of
+    underscores as italics, so a name like "The A_B_C Study" comes out as
+    "The A" + italic "B" + "C Study". &lowbar; displays as "_" in both.
+    Only use this on display text, never on URLs.
+    """
+    return text.replace("_", "&lowbar;")
+
+
+class _HtmlToSynapseMarkdown(HTMLParser):
+    """HTML -> Synapse markdown. See html_to_synapse_markdown()."""
+
+    _INLINE = {"strong": "**", "b": "**", "em": "*", "i": "*", "sup": "^", "sub": "~"}
+    # characters that would otherwise be read as markdown formatting
+    # (underscores are handled separately - see _escape_underscores())
+    _ESCAPE = re.compile(r"([\\`*\[\]^~])")
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks = []        # finished blocks of markdown
+        self.buf = []           # current block's pieces
+        self.links = []         # stack of hrefs for open <a> tags
+        self.list_depth = 0
+        self.raw_depth = 0      # >0 while inside <figure> (kept as raw HTML)
+        self.raw = []
+
+    def _flush(self):
+        text = re.sub(r"[ \t\r\n]+", " ", "".join(self.buf)).strip()
+        if text:
+            self.blocks.append(text)
+        self.buf = []
+
+    def handle_starttag(self, tag, attrs):
+        if self.raw_depth or tag == "figure":
+            if tag == "figure":
+                self._flush()
+                self.raw_depth += 1
+            self.raw.append(self.get_starttag_text())
+            return
+        if tag == "img":  # stray image outside a <figure>: keep as raw HTML
+            self._flush()
+            self.blocks.append(self.get_starttag_text())
+        elif tag in ("p", "div", "br"):
+            # a <p> right inside an <li> belongs on the bullet's line
+            if not ("".join(self.buf).strip() == "*" and tag != "br"):
+                self._flush()
+        elif re.fullmatch(r"h[1-6]", tag):
+            self._flush()
+            self.buf.append("#" * int(tag[1]) + " ")
+        elif tag in ("ul", "ol"):
+            self._flush()
+            self.list_depth += 1
+        elif tag == "li":
+            self._flush()
+            self.buf.append("  " * (self.list_depth - 1) + "* ")
+        elif tag == "a":
+            self.links.append(dict(attrs).get("href", ""))
+            self.buf.append("[")
+        elif tag in self._INLINE:
+            self.buf.append(self._INLINE[tag])
+
+    def handle_endtag(self, tag):
+        if self.raw_depth:
+            self.raw.append(f"</{tag}>")
+            if tag == "figure":
+                self.raw_depth -= 1
+                if not self.raw_depth:
+                    self.blocks.append("".join(self.raw))
+                    self.raw = []
+            return
+        if tag in ("p", "div", "li") or re.fullmatch(r"h[1-6]", tag):
+            # a <p> inside an <li> must not end the list item's line early
+            if not (tag == "p" and self.buf and self.buf[0].lstrip().startswith("* ")):
+                self._flush()
+        elif tag in ("ul", "ol"):
+            self._flush()
+            self.list_depth = max(0, self.list_depth - 1)
+        elif tag == "a":
+            self.buf.append(f"]({self.links.pop() if self.links else ''})")
+        elif tag in self._INLINE:
+            self.buf.append(self._INLINE[tag])
+
+    def handle_data(self, data):
+        if self.raw_depth:
+            self.raw.append(html.escape(data, quote=False))
+        else:
+            self.buf.append(_escape_underscores(self._ESCAPE.sub(r"\\\1", data)))
+
+    def result(self):
+        self._flush()
+        out, prev_list = [], False
+        for block in self.blocks:
+            is_list = block.lstrip().startswith("* ")
+            # list items sit on consecutive lines; everything else gets a blank line
+            out.append(("\n" if (is_list and prev_list) else "\n\n") + block)
+            prev_list = is_list
+        return "".join(out).strip() + "\n"
+
+
+def html_to_synapse_markdown(html_text):
+    """
+    Convert contributor HTML (e.g. text copied from a Jira ticket) to Synapse
+    wiki markdown, so it renders with normal paragraph spacing.
+
+    Kept: paragraphs (blank line between), <h1>-<h6> as # headings, links as
+    [text](url), <strong>/<b> as **bold**, <em>/<i> as *italic*, <sup> as
+    ^sup^, <sub> as ~sub~, bullet lists as "* item". <figure> blocks and
+    <img> tags are kept as raw HTML. Literal *, _, [, ], ^, ~ in the text
+    are escaped so they don't turn into formatting. Other tags are dropped
+    but their text is kept.
+    """
+    parser = _HtmlToSynapseMarkdown()
+    parser.feed(html_text)
+    parser.close()
+    return parser.result()
+
+
+def ask_study_name(study_name=None):
+    """Return study_name, or ask for it on the command line until one is given."""
+    while not (study_name and study_name.strip()):
+        study_name = input("Study name for the top of the wiki "
+                           "(e.g. 'The EXAMPLE_STUDY Study (EXAMPLE_STUDY)'): ")
+    return study_name.strip()
+
+
+def _read_section(path):
+    with open(path, encoding="utf-8") as f:
+        text = f.read()
+    if path.lower().endswith((".html", ".htm")) or re.search(r"<(p|h[1-6]|a|div)[\s>]", text):
+        return html_to_synapse_markdown(text).strip()
+    return text.strip()
+
+
+def build_study_wiki(out_path, description_path, methods_path, study_name=None):
+    """
+    Write a study wiki page to `out_path` in the standard layout:
+
+        # <study name>
+        ## Study Description:
+        <description>
+        ## Methods:
+        <methods>
+
+    `study_name` is always the first line; if it's not given, you're asked
+    for it. `description_path` / `methods_path` are files holding the
+    contributor's text - HTML is converted with html_to_synapse_markdown(),
+    markdown/plain text is used as-is. Returns out_path, ready to pass to
+    create_or_update_wiki() as content_path.
+    """
+    study_name = _escape_underscores(ask_study_name(study_name))
+    page = (
+        f"# {study_name}\n\n"
+        f"## Study Description:\n\n{_read_section(description_path)}\n\n"
+        f"## Methods:\n\n{_read_section(methods_path)}\n"
+    )
+    with open(out_path, "w", encoding="utf-8", newline="") as f:
+        f.write(page)
+    return out_path
+
+
 def preview_content(content_path):
     """
     Open a content file directly in the default web browser, so you can
@@ -171,7 +375,8 @@ def preview_content(content_path):
     return path
 
 
-def create_or_update_wiki(syn, owner_id, title, content_path, parent_id=None, verify=True, dry_run=False):
+def create_or_update_wiki(syn, owner_id, title, content_path, parent_id=None, verify=True, dry_run=False,
+                          wiki_id=None):
     """
     Create a new wiki page, or update it in place if a page with this exact
     title already exists on this owner. `content_path` must be a path to a
@@ -182,6 +387,11 @@ def create_or_update_wiki(syn, owner_id, title, content_path, parent_id=None, ve
     owner's root wiki page, or set it to an existing page's id to create a
     new sub-page nested under it. It's ignored (the page's real parent is
     preserved) when updating an existing page.
+
+    `wiki_id` updates that exact page instead of looking one up by title.
+    Use it for pages with no title (e.g. a folder's existing root page),
+    which the title lookup can't find - without it, the script would try to
+    create a second root page and fail.
 
     `dry_run=True` prints the create-vs-update plan, opens the content file
     in your browser for a visual check (see preview_content()), and returns
@@ -194,7 +404,10 @@ def create_or_update_wiki(syn, owner_id, title, content_path, parent_id=None, ve
     if not os.path.isfile(content_path):
         raise FileNotFoundError(f"Content file not found: {content_path}")
 
-    existing = find_existing_wiki(syn, owner_id, title)
+    if wiki_id:
+        existing = WikiPage(owner_id=owner_id, id=str(wiki_id)).get(synapse_client=syn)
+    else:
+        existing = find_existing_wiki(syn, owner_id, title)
 
     if dry_run:
         if existing:
@@ -333,11 +546,27 @@ def _parse_args():
     parser.add_argument("--dry-run", action="store_true",
                          help="Preview only: print the create/update plan and open the content file in "
                               "your browser, but write nothing to Synapse.")
-    return parser.parse_args()
+    parser.add_argument("--wiki-id", default=None,
+                         help="Update this exact wiki page id instead of looking it up by title "
+                              "(needed for pages with no title).")
+    study = parser.add_argument_group(
+        "study wiki", "Build a study wiki (study name, Study Description, Methods) into content_path "
+                      "before uploading. Give both --description and --methods.")
+    study.add_argument("--description", default=None, help="File with the study description (HTML or markdown)")
+    study.add_argument("--methods", default=None, help="File with the methods (HTML or markdown)")
+    study.add_argument("--study-name", default=None,
+                       help="Shown as the top heading. If left out, you'll be asked for it.")
+    args = parser.parse_args()
+    if bool(args.description) != bool(args.methods):
+        parser.error("--description and --methods must be given together")
+    return args
 
 
 if __name__ == "__main__":
     args = _parse_args()
+    if args.description:
+        build_study_wiki(args.content_path, args.description, args.methods, args.study_name)
+        print(f"Built study wiki: {os.path.abspath(args.content_path)}")
     syn = login()
     create_or_update_wiki(
         syn,
@@ -347,4 +576,5 @@ if __name__ == "__main__":
         parent_id=args.parent_id,
         verify=not args.no_verify,
         dry_run=args.dry_run,
+        wiki_id=args.wiki_id,
     )
