@@ -439,6 +439,117 @@ move-data/
   runs/                         # git-ignored - manifests, migration progress, audit log
 ```
 
+#### The process, start to finish
+
+A summary of a whole data move, from planning through cleanup. The
+sections after this one cover the script itself.
+
+**1. Plan the move**
+
+- List each source and destination folder in a move plan CSV:
+  `origin_id`, `destination_id`, plus an optional readable path.
+- Confirm the plan with the contributor and the data lead before anything
+  is touched.
+- Decide whether to leave a "MOVED" link in each original folder. The link
+  leaves a trail, but it does change the contributor's space, so ask first
+  if you can.
+
+**2. Choose a transfer method** (more detail in
+[Choosing a transfer method](#choosing-a-transfer-method))
+
+- **Storage matters.** Moving a file in Synapse only changes where it
+  *shows up*. The stored bytes stay in their original storage location. If
+  the source uses Synapse's default storage and the destination is backed
+  by the ADKP bucket, a plain move leaves the data in the wrong place.
+- **`move`:** only changes the parent folder. Use it when both locations
+  already use the same storage. synIDs stay the same.
+- **`migrate`:** relocates the bytes inside Synapse, then moves the files,
+  and synIDs stay the same. It only works if you **created** the
+  destination's storage location, which is usually not the case for ADKP
+  Staging.
+- **`reupload`:** downloads every file and uploads it into the
+  destination. This works without owning the storage, but files get **new
+  synIDs** and only the current version is copied. Run it on an EC2 for
+  anything large.
+- **What not to use:** `synapseutils.copy()` doesn't relocate the bytes,
+  because the copies point at the same stored object.
+
+**3. Dry run (always first)**
+
+- The dry run changes nothing in Synapse. It checks:
+  - **Access:** both IDs exist; you can move files out of the source and
+    add files to the destination.
+  - **Privacy:** the destination is private (not public or shared with all
+    Synapse users).
+  - **Sharing settings:** files or folders with their own sharing
+    settings, which would otherwise follow them instead of taking on the
+    destination's.
+  - **Conflicts:** name clashes in the destination.
+  - **Storage:** storage locations, and for `migrate`, whether you own the
+    destination storage.
+  - **Restrictions:** access restrictions such as terms of use or
+    controlled access. For `reupload`, any restriction is an error.
+  - **Space:** enough free disk space for `reupload`.
+  - **Deleting rights:** delete permission on the originals, if they'll be
+    deleted.
+- It writes a "before" manifest: one row per file with synID, name, MD5,
+  size and storage location.
+- Fix every ERROR before the real run. Read the WARNINGs and decide on
+  each one.
+
+**4. Run it for real**
+
+- Set `dry_run` to `False`. Set `confirm_migration` to `False` if you don't
+  want a y/n prompt before each row.
+- For long runs on an EC2:
+  - launch it from Service Catalog (EC2 Linux Docker; `m6a.large` was
+    enough for about 780 GB);
+  - run inside `tmux`, so the job keeps going if the browser session
+    drops;
+  - store the Synapse login in a temporary personal access token, never in
+    the code.
+- Re-running is safe. `reupload` skips files that are already copied and
+  verified, and nothing is deleted until every file passes.
+
+**5. Verify**
+
+- **Every file:** each one is in the right destination folder, its MD5
+  matches the original, and it's in the destination's storage location.
+- **Sharing:** moved or copied items take their sharing settings from the
+  destination.
+- **Manifest:** an "after" manifest is written. For `reupload`, it's the
+  **only record pairing old synIDs with new ones.**
+- **Spot-check:** look at a few folders in the Synapse UI.
+
+**6. Delete the originals (reupload only, optional)**
+
+- With `delete_originals` turned on, originals go to the Synapse trash
+  only after every copy verifies.
+- The trash can be restored for a limited time, so check soon.
+
+**7. Related documentation**
+
+- Copy any methods or description wikis from the source folders to the
+  new location with [Copy Wiki](#copy-wiki). It runs a preview first, can
+  label each source's section, and stops if a wiki has attachments.
+
+**8. Keep the records**
+
+- Save the run folder: both manifests, the audit log, and the screen logs.
+- Keep it somewhere private: never a study's Staging or Metadata folder,
+  and never a public repo.
+- An EC2's browser terminal can't download files, so bundle them with
+  `tar` and use a private Synapse folder to get them off the EC2.
+
+**9. Clean up**
+
+- **EC2:** delete `~/.synapseConfig`, delete the temporary access token on
+  synapse.org, then terminate the EC2 through **Service Catalog →
+  Provisioned products**. Terminating from the EC2 console gives a "not
+  authorized" error. "Under change" is normal while it shuts down.
+- **Jira:** tell the contributor and the team where the data is now,
+  including the new synIDs if there was a re-upload.
+
 #### What it does
 
 For each row of a move plan ("move everything inside origin into
