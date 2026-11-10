@@ -328,6 +328,8 @@ def ask_study_name(study_name=None):
 def _read_section(path):
     with open(path, encoding="utf-8") as f:
         text = f.read()
+    if path.lower().endswith((".md", ".txt")):
+        return text.strip()
     if path.lower().endswith((".html", ".htm")) or re.search(r"<(p|h[1-6]|a|div)[\s>]", text):
         return html_to_synapse_markdown(text).strip()
     return text.strip()
