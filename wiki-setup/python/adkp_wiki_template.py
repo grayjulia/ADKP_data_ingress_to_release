@@ -214,28 +214,41 @@ class _HtmlToSynapseMarkdown(HTMLParser):
     # characters that would otherwise be read as markdown formatting
     # (underscores are handled separately - see _escape_underscores())
     _ESCAPE = re.compile(r"([\\`*\[\]^~])")
+    # text that would turn into a heading, list or horizontal line if it
+    # started a line: "# x", "1. x" / "1) x", "- x", "+ x", "---", "==="
+    _BLOCK_START = re.compile(r"^(\s*(?:\d+)?)([#\-+=]|(?<=\d)[.)])")
+    _LIST_LINE = re.compile(r"\s*(\*|\d+\.) ")      # a bullet or numbered item
+    _MARKER_ONLY = re.compile(r"\s*(\*|\d+\.)?\s*")  # nothing but a list marker
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.blocks = []        # finished blocks of markdown
         self.buf = []           # current block's pieces
         self.links = []         # stack of hrefs for open <a> tags
-        self.list_depth = 0
-        self.li_indents = []    # indent of each open <li>, innermost last
-        self.continuation = False  # current block is an extra paragraph in a bullet
+        self.lists = []         # open lists: [next number] for <ol>, [None] for <ul>
+        self.li_indents = []    # text indent of each open <li>, innermost last
+        self.continuation = False  # current block is an extra paragraph in a list item
+        self.opened = None      # index in buf of a just-opened bold/italic marker
         self.raw_depth = 0      # >0 while inside <figure> (kept as raw HTML)
         self.raw = []
 
     def _flush(self):
         raw = "".join(self.buf)
         if raw.strip():
-            keep_indent = self.continuation or raw.lstrip().startswith("* ")
+            keep_indent = self.continuation or self._LIST_LINE.match(raw)
             indent = re.match(r" *", raw).group(0) if keep_indent else ""
             self.blocks.append(indent + re.sub(r"[ \t\r\n]+", " ", raw).strip())
         self.buf = []
         self.continuation = False
 
+    def _continue_item(self):
+        # start an extra paragraph inside the innermost open list item,
+        # indented under the item's text so it stays part of that item
+        self.buf.append(self.li_indents[-1])
+        self.continuation = True
+
     def handle_starttag(self, tag, attrs):
+        self.opened = None
         if self.raw_depth or tag == "figure":
             if tag == "figure":
                 self._flush()
@@ -247,17 +260,14 @@ class _HtmlToSynapseMarkdown(HTMLParser):
             # an image inside a link (<a><img></a>) stays clickable
             self.buf.append(self.get_starttag_text())
         elif tag == "br":
-            # a line break, not a new paragraph - keeps bold text and bullets whole
+            # a line break, not a new paragraph - keeps bold text and list items whole
             self.buf.append("<br>")
         elif tag in ("p", "div"):
-            if "".join(self.buf).strip() == "*":
-                pass  # a <p> right inside an <li> belongs on the bullet's line
+            if self._MARKER_ONLY.fullmatch("".join(self.buf)) and self.buf:
+                pass  # a <p> right inside an <li> belongs on the item's line
             elif self.li_indents:
-                # a further paragraph in the same bullet: indent it under the
-                # bullet so it stays part of that list item
                 self._flush()
-                self.buf.append(self.li_indents[-1] + "  ")
-                self.continuation = True
+                self._continue_item()
             else:
                 self._flush()
         elif re.fullmatch(r"h[1-6]", tag):
@@ -265,19 +275,28 @@ class _HtmlToSynapseMarkdown(HTMLParser):
             self.buf.append("#" * int(tag[1]) + " ")
         elif tag in ("ul", "ol"):
             self._flush()
-            self.list_depth += 1
+            start = dict(attrs).get("start", "1")
+            self.lists.append(int(start) if tag == "ol" and start.isdigit() else
+                              (1 if tag == "ol" else None))
         elif tag == "li":
             self._flush()
-            indent = "  " * max(0, self.list_depth - 1)
-            self.li_indents.append(indent)
-            self.buf.append(indent + "* ")
+            if self.lists and self.lists[-1] is not None:
+                marker = f"{self.lists[-1]}. "
+                self.lists[-1] += 1
+            else:
+                marker = "* "
+            indent = self.li_indents[-1] if self.li_indents else ""
+            self.li_indents.append(indent + " " * len(marker))
+            self.buf.append(indent + marker)
         elif tag == "a":
             self.links.append(dict(attrs).get("href", ""))
             self.buf.append("[")
         elif tag in self._INLINE:
             self.buf.append(self._INLINE[tag])
+            self.opened = len(self.buf) - 1
 
     def handle_endtag(self, tag):
+        self.opened = None
         if self.raw_depth:
             self.raw.append(f"</{tag}>")
             if tag == "figure":
@@ -288,33 +307,61 @@ class _HtmlToSynapseMarkdown(HTMLParser):
             return
         if tag in ("p", "div", "li") or re.fullmatch(r"h[1-6]", tag):
             # a <p> inside an <li> must not end the list item's line early
-            if not (tag in ("p", "div") and self.buf and self.buf[0].lstrip().startswith("* ")):
+            if not (tag in ("p", "div") and self.buf and self._LIST_LINE.match(self.buf[0])):
                 self._flush()
             if tag == "li" and self.li_indents:
                 self.li_indents.pop()
         elif tag in ("ul", "ol"):
             self._flush()
-            self.list_depth = max(0, self.list_depth - 1)
+            if self.lists:
+                self.lists.pop()
+            if self.li_indents:
+                # text after a nested list still belongs to the enclosing item
+                self._continue_item()
         elif tag == "a":
             href = self.links.pop() if self.links else ""
             # percent-encode spaces, parentheses etc. so the address can't break
             # the markdown link; underscores and existing %xx codes stay as-is
             self.buf.append(f"]({quote(href, safe=':/?#[]@!$&*+,;=%~')})")
         elif tag in self._INLINE:
-            self.buf.append(self._INLINE[tag])
+            marker = self._INLINE[tag]
+            if self.buf and self.buf[-1] == marker:
+                self.buf.pop()  # empty span: drop the markers entirely
+                return
+            # markdown bold/italic can't end with a space ("**word **"), so
+            # move trailing whitespace outside the closing marker
+            last = self.buf[-1] if self.buf else ""
+            trimmed = last.rstrip()
+            if self.buf:
+                self.buf[-1] = trimmed
+            self.buf.append(marker + last[len(trimmed):])
 
     def handle_data(self, data):
         if self.raw_depth:
             self.raw.append(html.escape(data, quote=False))
-        else:
-            data = html.escape(data, quote=False)
-            self.buf.append(_escape_underscores(self._ESCAPE.sub(r"\\\1", data)))
+            return
+        if self.opened is not None and self.opened == len(self.buf) - 1:
+            # markdown bold/italic can't start with a space ("** word**"), so
+            # move leading whitespace in front of the opening marker
+            lead = data[:len(data) - len(data.lstrip())]
+            if lead:
+                self.buf.insert(self.opened, lead)
+                data = data.lstrip()
+                if not data:
+                    return  # keep self.opened pointing at the marker
+        self.opened = None
+        text = self._ESCAPE.sub(r"\\\1", html.escape(data, quote=False))
+        if self._MARKER_ONLY.fullmatch("".join(self.buf).lstrip("#")):
+            # text at the start of a line: stop it turning into a heading,
+            # list or horizontal line
+            text = self._BLOCK_START.sub(r"\1\\\2", text)
+        self.buf.append(_escape_underscores(text))
 
     def result(self):
         self._flush()
         out, prev_list = [], False
         for block in self.blocks:
-            is_list = block.lstrip().startswith("* ")
+            is_list = bool(self._LIST_LINE.match(block))
             # list items sit on consecutive lines; everything else gets a blank line
             out.append(("\n" if (is_list and prev_list) else "\n\n") + block)
             prev_list = is_list
@@ -328,11 +375,14 @@ def html_to_synapse_markdown(html_text):
 
     Kept: paragraphs (blank line between), <h1>-<h6> as # headings, links as
     [text](url), <strong>/<b> as **bold**, <em>/<i> as *italic*, <sup> as
-    ^sup^, <sub> as ~sub~, bullet lists as "* item" (extra paragraphs in a
-    bullet are indented under it), <br> as an inline <br>. <figure> blocks
+    ^sup^, <sub> as ~sub~, bullet lists as "* item" and numbered lists as
+    "1. item" (keeping a start number; extra paragraphs in an item are
+    indented under it), <br> as an inline <br>. <figure> blocks
     and <img> tags are kept as raw HTML. Spaces and other unsafe characters
     in link addresses are %-encoded. Literal *, _, [, ], ^, ~ in the text
-    are escaped so they don't turn into formatting. Other tags are dropped
+    are escaped so they don't turn into formatting, as is text at the start
+    of a line that would otherwise become a heading, list or horizontal
+    line ("# ...", "1. ...", "- ...", "---"). Other tags are dropped
     but their text is kept.
     """
     parser = _HtmlToSynapseMarkdown()
