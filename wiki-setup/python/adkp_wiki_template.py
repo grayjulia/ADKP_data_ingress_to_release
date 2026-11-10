@@ -139,6 +139,7 @@ import os
 import re
 import tempfile
 from html.parser import HTMLParser
+from urllib.parse import quote
 
 import synapseclient
 from synapseclient.core.exceptions import SynapseHTTPError
@@ -220,16 +221,19 @@ class _HtmlToSynapseMarkdown(HTMLParser):
         self.buf = []           # current block's pieces
         self.links = []         # stack of hrefs for open <a> tags
         self.list_depth = 0
+        self.li_indents = []    # indent of each open <li>, innermost last
+        self.continuation = False  # current block is an extra paragraph in a bullet
         self.raw_depth = 0      # >0 while inside <figure> (kept as raw HTML)
         self.raw = []
 
     def _flush(self):
         raw = "".join(self.buf)
-        indent = re.match(r" *", raw).group(0) if raw.lstrip().startswith("* ") else ""
-        text = indent + re.sub(r"[ \t\r\n]+", " ", raw).strip()
-        if text:
-            self.blocks.append(text)
+        if raw.strip():
+            keep_indent = self.continuation or raw.lstrip().startswith("* ")
+            indent = re.match(r" *", raw).group(0) if keep_indent else ""
+            self.blocks.append(indent + re.sub(r"[ \t\r\n]+", " ", raw).strip())
         self.buf = []
+        self.continuation = False
 
     def handle_starttag(self, tag, attrs):
         if self.raw_depth or tag == "figure":
@@ -238,12 +242,23 @@ class _HtmlToSynapseMarkdown(HTMLParser):
                 self.raw_depth += 1
             self.raw.append(self.get_starttag_text())
             return
-        if tag == "img":  # stray image outside a <figure>: keep as raw HTML
-            self._flush()
-            self.blocks.append(self.get_starttag_text())
-        elif tag in ("p", "div", "br"):
-            # a <p> right inside an <li> belongs on the bullet's line
-            if not ("".join(self.buf).strip() == "*" and tag != "br"):
+        if tag == "img":
+            # stray image outside a <figure>: keep as raw HTML, in place, so
+            # an image inside a link (<a><img></a>) stays clickable
+            self.buf.append(self.get_starttag_text())
+        elif tag == "br":
+            # a line break, not a new paragraph - keeps bold text and bullets whole
+            self.buf.append("<br>")
+        elif tag in ("p", "div"):
+            if "".join(self.buf).strip() == "*":
+                pass  # a <p> right inside an <li> belongs on the bullet's line
+            elif self.li_indents:
+                # a further paragraph in the same bullet: indent it under the
+                # bullet so it stays part of that list item
+                self._flush()
+                self.buf.append(self.li_indents[-1] + "  ")
+                self.continuation = True
+            else:
                 self._flush()
         elif re.fullmatch(r"h[1-6]", tag):
             self._flush()
@@ -253,7 +268,9 @@ class _HtmlToSynapseMarkdown(HTMLParser):
             self.list_depth += 1
         elif tag == "li":
             self._flush()
-            self.buf.append("  " * (self.list_depth - 1) + "* ")
+            indent = "  " * max(0, self.list_depth - 1)
+            self.li_indents.append(indent)
+            self.buf.append(indent + "* ")
         elif tag == "a":
             self.links.append(dict(attrs).get("href", ""))
             self.buf.append("[")
@@ -271,13 +288,18 @@ class _HtmlToSynapseMarkdown(HTMLParser):
             return
         if tag in ("p", "div", "li") or re.fullmatch(r"h[1-6]", tag):
             # a <p> inside an <li> must not end the list item's line early
-            if not (tag == "p" and self.buf and self.buf[0].lstrip().startswith("* ")):
+            if not (tag in ("p", "div") and self.buf and self.buf[0].lstrip().startswith("* ")):
                 self._flush()
+            if tag == "li" and self.li_indents:
+                self.li_indents.pop()
         elif tag in ("ul", "ol"):
             self._flush()
             self.list_depth = max(0, self.list_depth - 1)
         elif tag == "a":
-            self.buf.append(f"]({self.links.pop() if self.links else ''})")
+            href = self.links.pop() if self.links else ""
+            # percent-encode spaces, parentheses etc. so the address can't break
+            # the markdown link; underscores and existing %xx codes stay as-is
+            self.buf.append(f"]({quote(href, safe=':/?#[]@!$&*+,;=%~')})")
         elif tag in self._INLINE:
             self.buf.append(self._INLINE[tag])
 
@@ -306,8 +328,10 @@ def html_to_synapse_markdown(html_text):
 
     Kept: paragraphs (blank line between), <h1>-<h6> as # headings, links as
     [text](url), <strong>/<b> as **bold**, <em>/<i> as *italic*, <sup> as
-    ^sup^, <sub> as ~sub~, bullet lists as "* item". <figure> blocks and
-    <img> tags are kept as raw HTML. Literal *, _, [, ], ^, ~ in the text
+    ^sup^, <sub> as ~sub~, bullet lists as "* item" (extra paragraphs in a
+    bullet are indented under it), <br> as an inline <br>. <figure> blocks
+    and <img> tags are kept as raw HTML. Spaces and other unsafe characters
+    in link addresses are %-encoded. Literal *, _, [, ], ^, ~ in the text
     are escaped so they don't turn into formatting. Other tags are dropped
     but their text is kept.
     """
