@@ -285,6 +285,7 @@ class _HtmlToSynapseMarkdown(HTMLParser):
         if self.raw_depth:
             self.raw.append(html.escape(data, quote=False))
         else:
+            data = html.escape(data, quote=False)
             self.buf.append(_escape_underscores(self._ESCAPE.sub(r"\\\1", data)))
 
     def result(self):
