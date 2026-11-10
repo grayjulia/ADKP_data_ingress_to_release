@@ -224,7 +224,9 @@ class _HtmlToSynapseMarkdown(HTMLParser):
         self.raw = []
 
     def _flush(self):
-        text = re.sub(r"[ \t\r\n]+", " ", "".join(self.buf)).strip()
+        raw = "".join(self.buf)
+        indent = re.match(r" *", raw).group(0) if raw.lstrip().startswith("* ") else ""
+        text = indent + re.sub(r"[ \t\r\n]+", " ", raw).strip()
         if text:
             self.blocks.append(text)
         self.buf = []
